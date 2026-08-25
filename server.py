@@ -17,7 +17,7 @@ from urllib.parse import urlparse, parse_qs
 
 # -------------------- Config --------------------
 HOST = "0.0.0.0"
-PORT = 8765
+PORT = int(os.environ.get("PORT", "8765"))
 DB_PATH = os.environ.get("GAS_DB", os.path.join(os.path.dirname(os.path.abspath(__file__)), "gas_system.db"))
 SECRET = os.environ.get("GAS_SECRET", "asci-gas-tracking-secret-change-me")
 TOKEN_TTL = 60 * 60 * 24 * 7  # 7 days
@@ -76,6 +76,10 @@ def init_db():
             purity TEXT DEFAULT '',
             status TEXT NOT NULL DEFAULT 'normal',
             responsible TEXT DEFAULT '',
+            is_blend INTEGER NOT NULL DEFAULT 0,
+            concentration TEXT DEFAULT '',
+            expiry_date TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         """
@@ -88,19 +92,19 @@ def init_db():
             "INSERT INTO users (username, password_hash, salt, full_name, department, role) VALUES (?,?,?,?,?,?)",
             ("admin", ph, salt, "ผู้ดูแลระบบ", "ASci", "admin"),
         )
-    # seed cylinders if empty
-    cur = conn.execute("SELECT COUNT(*) AS c FROM cylinders")
-    if cur.fetchone()["c"] == 0:
-        samples = [
-            ("CYL-001", "Nitrogen (N₂)", "ห้อง LAB-03", 12, "99.999%", "critical", "คุณกิตติพงศ์"),
-            ("CYL-002", "Oxygen (O₂)", "ห้อง LAB-01", 145, "99.5%", "normal", "คุณณัฐชา"),
-            ("CYL-003", "Argon (Ar)", "คลังแก๊สกลาง", 98, "99.999%", "low", "คุณสุวิทย์"),
-            ("CYL-004", "Carbon Dioxide (CO₂)", "ห้องเครื่องมือ", 65, "99.9%", "normal", "คุณอรทัย"),
-        ]
-        conn.executemany(
-            "INSERT INTO cylinders (code, gas_type, location, pressure_bar, purity, status, responsible) VALUES (?,?,?,?,?,?,?)",
-            samples,
-        )
+    # ไม่ใส่ข้อมูลถัง demo — เพิ่มเองผ่านระบบหรือ API
+
+    # migrate old DBs: add new columns if missing
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(cylinders)").fetchall()}
+    for col, decl in [
+        ("is_blend", "INTEGER NOT NULL DEFAULT 0"),
+        ("concentration", "TEXT DEFAULT ''"),
+        ("expiry_date", "TEXT DEFAULT ''"),
+        ("notes", "TEXT DEFAULT ''"),
+    ]:
+        if col not in cols:
+            conn.execute(f"ALTER TABLE cylinders ADD COLUMN {col} {decl}")
+
     conn.commit()
     conn.close()
 
@@ -291,17 +295,100 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchone()["c"]
             usage_count = conn.execute("SELECT COUNT(*) AS c FROM usage_records").fetchone()["c"]
             conn.close()
+            # expiry monitoring
+            rows = conn.execute(
+                "SELECT id, code, gas_type, expiry_date, status FROM cylinders WHERE expiry_date IS NOT NULL AND expiry_date != ''"
+            ).fetchall()
+            from datetime import datetime, timedelta
+            today = datetime.utcnow().date()
+            expired = 0
+            expiring_soon = 0  # within 30 days
+            for r in rows:
+                try:
+                    d = datetime.strptime(r["expiry_date"][:10], "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+                days = (d - today).days
+                if days < 0:
+                    expired += 1
+                elif days <= 30:
+                    expiring_soon += 1
             return self._json(
                 200,
                 {
                     "totalCylinders": total,
-                    "inUse": normal + low + critical,  # demo figure
+                    "inUse": normal + low + critical,
                     "low": low,
                     "critical": critical,
-                    "alerts": critical + (1 if low else 0),
+                    "expired": expired,
+                    "expiringSoon": expiring_soon,
+                    "alerts": critical + low + expired + expiring_soon,
                     "usageCount": usage_count,
                 },
             )
+
+
+        if path == "/api/alerts":
+            if not user:
+                return self._json(401, {"error": "ไม่ได้เข้าสู่ระบบ"})
+            from datetime import datetime
+            today = datetime.utcnow().date()
+            conn = get_db()
+            rows = conn.execute("SELECT * FROM cylinders ORDER BY code").fetchall()
+            conn.close()
+            alerts = []
+            for r in rows:
+                c = dict(r)
+                if c.get("status") == "critical":
+                    alerts.append({
+                        "level": "critical",
+                        "title": f"{c['code']} — แรงดันวิกฤต",
+                        "message": f"{c['gas_type']} ที่ {c['location']} แรงดัน {c['pressure_bar']} bar",
+                        "code": c["code"],
+                    })
+                elif c.get("status") == "low":
+                    alerts.append({
+                        "level": "warning",
+                        "title": f"{c['code']} — แรงดันต่ำ",
+                        "message": f"{c['gas_type']} ที่ {c['location']} แรงดัน {c['pressure_bar']} bar",
+                        "code": c["code"],
+                    })
+                exp = (c.get("expiry_date") or "").strip()
+                if exp:
+                    try:
+                        d = datetime.strptime(exp[:10], "%Y-%m-%d").date()
+                        days = (d - today).days
+                        if days < 0:
+                            alerts.append({
+                                "level": "critical",
+                                "title": f"{c['code']} — หมดอายุแล้ว",
+                                "message": f"{c['gas_type']} หมดอายุเมื่อ {exp[:10]} (เกิน {abs(days)} วัน)",
+                                "code": c["code"],
+                            })
+                        elif days <= 7:
+                            alerts.append({
+                                "level": "critical",
+                                "title": f"{c['code']} — ใกล้หมดอายุมาก",
+                                "message": f"{c['gas_type']} หมดอายุในอีก {days} วัน ({exp[:10]})",
+                                "code": c["code"],
+                            })
+                        elif days <= 30:
+                            alerts.append({
+                                "level": "warning",
+                                "title": f"{c['code']} — ใกล้หมดอายุ",
+                                "message": f"{c['gas_type']} หมดอายุในอีก {days} วัน ({exp[:10]})",
+                                "code": c["code"],
+                            })
+                    except ValueError:
+                        pass
+            if not alerts:
+                alerts.append({
+                    "level": "ok",
+                    "title": "ไม่มีแจ้งเตือนสำคัญ",
+                    "message": "แรงดันและวันหมดอายุอยู่ในเกณฑ์",
+                    "code": "",
+                })
+            return self._json(200, {"alerts": alerts})
 
         self._json(404, {"error": "ไม่พบ endpoint"})
 
@@ -400,7 +487,106 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
             return self._json(201, {"ok": True, "id": rid})
 
+        if path == "/api/cylinders":
+            code = (data.get("code") or "").strip()
+            gas_type = (data.get("gas_type") or data.get("gasType") or "").strip()
+            location = (data.get("location") or "").strip()
+            try:
+                pressure = float(data.get("pressure_bar") if data.get("pressure_bar") is not None else data.get("pressure", 0))
+            except (TypeError, ValueError):
+                return self._json(400, {"error": "แรงดันต้องเป็นตัวเลข"})
+            purity = (data.get("purity") or "").strip()
+            status = (data.get("status") or "normal").strip()
+            responsible = (data.get("responsible") or "").strip()
+            is_blend = 1 if data.get("is_blend") in (True, 1, "1", "true", "yes") else 0
+            concentration = (data.get("concentration") or "").strip()
+            expiry_date = (data.get("expiry_date") or data.get("expiryDate") or "").strip()
+            notes = (data.get("notes") or "").strip()
+            if status not in ("normal", "low", "critical"):
+                return self._json(400, {"error": "สถานะต้องเป็น normal, low หรือ critical"})
+            if not code or not gas_type or not location:
+                return self._json(400, {"error": "กรุณากรอกรหัสถัง ชนิดแก๊ส และสถานที่"})
+            if is_blend and not concentration:
+                return self._json(400, {"error": "แก๊ส blend ต้องระบุความเข้มข้น / สัดส่วน"})
+            conn = get_db()
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO cylinders
+                    (code, gas_type, location, pressure_bar, purity, status, responsible,
+                     is_blend, concentration, expiry_date, notes, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
+                    """,
+                    (code, gas_type, location, pressure, purity, status, responsible,
+                     is_blend, concentration, expiry_date, notes),
+                )
+                rid = cur.lastrowid
+                conn.commit()
+            except sqlite3.IntegrityError:
+                conn.close()
+                return self._json(409, {"error": "รหัสถังนี้มีอยู่แล้ว"})
+            conn.close()
+            return self._json(201, {"ok": True, "id": rid})
+
         self._json(404, {"error": "ไม่พบ endpoint"})
+
+    def do_PUT(self):
+        path = urlparse(self.path).path
+        data = self._read_json()
+        user = self._auth_user()
+        if not user:
+            return self._json(401, {"error": "ไม่ได้เข้าสู่ระบบ"})
+
+        if path.startswith("/api/cylinders/"):
+            try:
+                cid = int(path.rsplit("/", 1)[-1])
+            except ValueError:
+                return self._json(400, {"error": "id ไม่ถูกต้อง"})
+            code = (data.get("code") or "").strip()
+            gas_type = (data.get("gas_type") or data.get("gasType") or "").strip()
+            location = (data.get("location") or "").strip()
+            try:
+                pressure = float(data.get("pressure_bar") if data.get("pressure_bar") is not None else data.get("pressure", 0))
+            except (TypeError, ValueError):
+                return self._json(400, {"error": "แรงดันต้องเป็นตัวเลข"})
+            purity = (data.get("purity") or "").strip()
+            status = (data.get("status") or "normal").strip()
+            responsible = (data.get("responsible") or "").strip()
+            is_blend = 1 if data.get("is_blend") in (True, 1, "1", "true", "yes") else 0
+            concentration = (data.get("concentration") or "").strip()
+            expiry_date = (data.get("expiry_date") or data.get("expiryDate") or "").strip()
+            notes = (data.get("notes") or "").strip()
+            if status not in ("normal", "low", "critical"):
+                return self._json(400, {"error": "สถานะต้องเป็น normal, low หรือ critical"})
+            if not code or not gas_type or not location:
+                return self._json(400, {"error": "กรุณากรอกรหัสถัง ชนิดแก๊ส และสถานที่"})
+            if is_blend and not concentration:
+                return self._json(400, {"error": "แก๊ส blend ต้องระบุความเข้มข้น / สัดส่วน"})
+            conn = get_db()
+            row = conn.execute("SELECT id FROM cylinders WHERE id = ?", (cid,)).fetchone()
+            if not row:
+                conn.close()
+                return self._json(404, {"error": "ไม่พบถังแก๊ส"})
+            try:
+                conn.execute(
+                    """
+                    UPDATE cylinders
+                    SET code=?, gas_type=?, location=?, pressure_bar=?, purity=?, status=?, responsible=?,
+                        is_blend=?, concentration=?, expiry_date=?, notes=?, updated_at=datetime('now')
+                    WHERE id=?
+                    """,
+                    (code, gas_type, location, pressure, purity, status, responsible,
+                     is_blend, concentration, expiry_date, notes, cid),
+                )
+                conn.commit()
+            except sqlite3.IntegrityError:
+                conn.close()
+                return self._json(409, {"error": "รหัสถังนี้มีอยู่แล้ว"})
+            conn.close()
+            return self._json(200, {"ok": True})
+
+        self._json(404, {"error": "ไม่พบ endpoint"})
+
 
     def do_DELETE(self):
         path = urlparse(self.path).path
@@ -426,6 +612,20 @@ class Handler(BaseHTTPRequestHandler):
             conn.execute("DELETE FROM users WHERE id = ?", (uid,))
             conn.commit()
             conn.close()
+            return self._json(200, {"ok": True})
+
+        if path.startswith("/api/cylinders/"):
+            try:
+                cid = int(path.rsplit("/", 1)[-1])
+            except ValueError:
+                return self._json(400, {"error": "id ไม่ถูกต้อง"})
+            conn = get_db()
+            cur = conn.execute("DELETE FROM cylinders WHERE id = ?", (cid,))
+            conn.commit()
+            deleted = cur.rowcount
+            conn.close()
+            if not deleted:
+                return self._json(404, {"error": "ไม่พบถังแก๊ส"})
             return self._json(200, {"ok": True})
 
         self._json(404, {"error": "ไม่พบ endpoint"})
