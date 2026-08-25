@@ -164,6 +164,7 @@
       <nav class="nav">
         <button type="button" class="active" data-page="dashboardPage" onclick="showPage('dashboardPage',this)"><span class="icon">🏠</span> แดชบอร์ด</button>
         <button type="button" data-page="gasPage" onclick="showPage('gasPage',this)"><span class="icon">🧪</span> ข้อมูลแก๊ส</button>
+        <button type="button" data-page="cylinderPage" onclick="showPage('cylinderPage',this)"><span class="icon">🧯</span> จัดการถังแก๊ส</button>
         <button type="button" data-page="usagePage" onclick="showPage('usagePage',this)"><span class="icon">🗂️</span> บันทึกการใช้</button>
         <button type="button" data-page="alertPage" onclick="showPage('alertPage',this)"><span class="icon">⚠️</span> แจ้งเตือน</button>
         <button type="button" data-page="reportPage" onclick="showPage('reportPage',this)"><span class="icon">📊</span> รายงาน</button>
@@ -258,6 +259,78 @@
           <div class="card"><div class="card-header"><h3>KPI</h3></div><div class="card-body"><table id="kpiTable"></table></div></div>
         </section>
         <div style="margin-top:16px"><button class="btn btn-primary" type="button" style="width:auto" onclick="exportReport()">Export รายงาน</button></div>
+      </div>
+
+
+      <div class="page" id="cylinderPage">
+        <h3 class="section-title">จัดการถังแก๊ส</h3>
+        <p class="mini-help">เพิ่ม แก้ไข หรือลบถังแก๊สในระบบ — ข้อมูลบันทึกลงฐานข้อมูลจริง</p>
+        <section class="card">
+          <div class="card-header">
+            <h3 id="cylFormTitle">เพิ่มถังแก๊สใหม่</h3>
+            <span id="cylFormMode">รายการใหม่</span>
+          </div>
+          <div class="card-body">
+            <form id="cylinderForm" onsubmit="saveCylinder(event)">
+              <input type="hidden" id="cylId" value="" />
+              <div class="form-grid">
+                <div class="field">
+                  <label for="cylCode">รหัสถัง *</label>
+                  <input type="text" id="cylCode" required placeholder="เช่น CYL-001" />
+                </div>
+                <div class="field">
+                  <label for="cylGas">ชนิดแก๊ส *</label>
+                  <input type="text" id="cylGas" required placeholder="เช่น Nitrogen (N₂)" list="gasSuggestions" />
+                  <datalist id="gasSuggestions">
+                    <option value="Nitrogen (N₂)"></option>
+                    <option value="Oxygen (O₂)"></option>
+                    <option value="Argon (Ar)"></option>
+                    <option value="Carbon Dioxide (CO₂)"></option>
+                    <option value="Helium (He)"></option>
+                    <option value="Hydrogen (H₂)"></option>
+                  </datalist>
+                </div>
+                <div class="field">
+                  <label for="cylLocation">สถานที่ *</label>
+                  <input type="text" id="cylLocation" required placeholder="เช่น LAB-03" />
+                </div>
+                <div class="field">
+                  <label for="cylPressure">แรงดัน (bar) *</label>
+                  <input type="number" id="cylPressure" required step="0.1" min="0" placeholder="เช่น 150" />
+                </div>
+                <div class="field">
+                  <label for="cylPurity">ความบริสุทธิ์</label>
+                  <input type="text" id="cylPurity" placeholder="เช่น 99.999%" />
+                </div>
+                <div class="field">
+                  <label for="cylStatus">สถานะ *</label>
+                  <select id="cylStatus" required>
+                    <option value="normal">ปกติ</option>
+                    <option value="low">เฝ้าระวัง</option>
+                    <option value="critical">ใกล้หมด / วิกฤต</option>
+                  </select>
+                </div>
+                <div class="field full">
+                  <label for="cylResponsible">ผู้รับผิดชอบ</label>
+                  <input type="text" id="cylResponsible" placeholder="ชื่อผู้รับผิดชอบ" />
+                </div>
+              </div>
+              <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+                <button class="btn btn-primary" type="submit" style="width:auto" id="cylSubmitBtn">บันทึกถังแก๊ส</button>
+                <button class="btn btn-secondary" type="button" style="width:auto" onclick="resetCylinderForm()">ล้างฟอร์ม / ยกเลิกแก้ไข</button>
+              </div>
+            </form>
+          </div>
+        </section>
+        <section class="card" style="margin-top:16px">
+          <div class="card-header">
+            <h3>รายการถังในระบบ</h3>
+            <span id="cylCountLabel">0 ถัง</span>
+          </div>
+          <div class="card-body">
+            <div id="cylManageTable"><p class="empty-note">ยังไม่มีถังแก๊ส — กรุณาเพิ่มรายการด้านบน</p></div>
+          </div>
+        </section>
       </div>
 
       <div class="page admin-only" id="usersPage">
@@ -392,6 +465,7 @@ function showPage(pageId, el){
   if(el) el.classList.add('active');
   if(pageId==='usersPage') loadUsers();
   if(pageId==='usagePage') loadUsage();
+  if(pageId==='cylinderPage') loadCylinderManage();
   if(pageId==='dashboardPage'||pageId==='gasPage'||pageId==='alertPage'||pageId==='reportPage') loadDashboard();
 }
 
@@ -551,6 +625,106 @@ async function exportReport(){
 document.getElementById('loginPassword').addEventListener('keydown',e=>{ if(e.key==='Enter') doLogin(); });
 document.getElementById('loginUsername').addEventListener('keydown',e=>{ if(e.key==='Enter') document.getElementById('loginPassword').focus(); });
 document.getElementById('regPassword2').addEventListener('keydown',e=>{ if(e.key==='Enter') doRegister(); });
+
+
+async function loadCylinderManage(){
+  try{
+    const data = await api('/api/cylinders');
+    const list = data.cylinders || [];
+    document.getElementById('cylCountLabel').textContent = list.length + ' ถัง';
+    const wrap = document.getElementById('cylManageTable');
+    if(!list.length){
+      wrap.innerHTML = '<p class="empty-note">ยังไม่มีถังแก๊ส — กรุณาเพิ่มรายการด้านบน</p>';
+      return;
+    }
+    let html = '<table><thead><tr><th>รหัสถัง</th><th>ชนิดแก๊ส</th><th>สถานที่</th><th>แรงดัน</th><th>ความบริสุทธิ์</th><th>สถานะ</th><th>ผู้รับผิดชอบ</th><th>จัดการ</th></tr></thead><tbody>';
+    window._cylMap = {};
+    list.forEach(c=>{
+      window._cylMap[c.id] = c;
+      const codeSafe = escapeHtml(c.code).replace(/'/g, "\\'");
+      html += `<tr>
+        <td>${escapeHtml(c.code)}</td>
+        <td>${escapeHtml(c.gas_type)}</td>
+        <td>${escapeHtml(c.location)}</td>
+        <td>${c.pressure_bar} bar</td>
+        <td>${escapeHtml(c.purity||'—')}</td>
+        <td>${statusLabel(c.status)}</td>
+        <td>${escapeHtml(c.responsible||'—')}</td>
+        <td style="white-space:nowrap">
+          <button type="button" class="btn btn-secondary" style="padding:6px 10px;font-size:12px;width:auto" onclick="editCylinderById(${c.id})">แก้ไข</button>
+          <button type="button" class="btn btn-danger" style="padding:6px 10px;font-size:12px;width:auto" onclick="deleteCylinder(${c.id}, '${codeSafe}')">ลบ</button>
+        </td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  }catch(e){ showToast(e.message,'error'); }
+}
+
+function resetCylinderForm(){
+  document.getElementById('cylinderForm').reset();
+  document.getElementById('cylId').value = '';
+  document.getElementById('cylFormTitle').textContent = 'เพิ่มถังแก๊สใหม่';
+  document.getElementById('cylFormMode').textContent = 'รายการใหม่';
+  document.getElementById('cylSubmitBtn').textContent = 'บันทึกถังแก๊ส';
+  document.getElementById('cylStatus').value = 'normal';
+}
+
+function editCylinderById(id){ const c = window._cylMap && window._cylMap[id]; if(c) editCylinder(c); }
+
+function editCylinder(c){
+  document.getElementById('cylId').value = c.id;
+  document.getElementById('cylCode').value = c.code || '';
+  document.getElementById('cylGas').value = c.gas_type || '';
+  document.getElementById('cylLocation').value = c.location || '';
+  document.getElementById('cylPressure').value = c.pressure_bar ?? '';
+  document.getElementById('cylPurity').value = c.purity || '';
+  document.getElementById('cylStatus').value = c.status || 'normal';
+  document.getElementById('cylResponsible').value = c.responsible || '';
+  document.getElementById('cylFormTitle').textContent = 'แก้ไขถังแก๊ส';
+  document.getElementById('cylFormMode').textContent = c.code;
+  document.getElementById('cylSubmitBtn').textContent = 'บันทึกการแก้ไข';
+  document.getElementById('cylCode').focus();
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+
+async function saveCylinder(e){
+  e.preventDefault();
+  const id = document.getElementById('cylId').value;
+  const body = {
+    code: document.getElementById('cylCode').value.trim(),
+    gas_type: document.getElementById('cylGas').value.trim(),
+    location: document.getElementById('cylLocation').value.trim(),
+    pressure_bar: parseFloat(document.getElementById('cylPressure').value),
+    purity: document.getElementById('cylPurity').value.trim(),
+    status: document.getElementById('cylStatus').value,
+    responsible: document.getElementById('cylResponsible').value.trim()
+  };
+  try{
+    if(id){
+      await api('/api/cylinders/' + id, { method:'PUT', body: JSON.stringify(body) });
+      showToast('แก้ไขถังแก๊สแล้ว', 'success');
+    } else {
+      await api('/api/cylinders', { method:'POST', body: JSON.stringify(body) });
+      showToast('เพิ่มถังแก๊สแล้ว', 'success');
+    }
+    resetCylinderForm();
+    loadCylinderManage();
+    loadDashboard();
+  }catch(err){ showToast(err.message, 'error'); }
+}
+
+async function deleteCylinder(id, code){
+  if(!confirm('ลบถัง ' + code + ' ออกจากระบบ?')) return;
+  try{
+    await api('/api/cylinders/' + id, { method:'DELETE' });
+    showToast('ลบถังแล้ว', 'success');
+    resetCylinderForm();
+    loadCylinderManage();
+    loadDashboard();
+  }catch(err){ showToast(err.message, 'error'); }
+}
+
 
 async function boot(){
   try{
