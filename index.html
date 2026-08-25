@@ -314,6 +314,25 @@
                   <label for="cylResponsible">ผู้รับผิดชอบ</label>
                   <input type="text" id="cylResponsible" placeholder="ชื่อผู้รับผิดชอบ" />
                 </div>
+                <div class="field">
+                  <label for="cylBlend">ประเภทแก๊ส</label>
+                  <select id="cylBlend" onchange="toggleBlendFields()">
+                    <option value="0">แก๊สเดี่ยว (Pure)</option>
+                    <option value="1">แก๊สผสม (Blend)</option>
+                  </select>
+                </div>
+                <div class="field" id="cylConcField">
+                  <label for="cylConcentration">ความเข้มข้น / สัดส่วน *</label>
+                  <input type="text" id="cylConcentration" placeholder="เช่น 5% CO₂ / 95% N₂ หรือ 1000 ppm CH₄" />
+                </div>
+                <div class="field">
+                  <label for="cylExpiry">วันหมดอายุ</label>
+                  <input type="date" id="cylExpiry" />
+                </div>
+                <div class="field full">
+                  <label for="cylNotes">หมายเหตุ</label>
+                  <input type="text" id="cylNotes" placeholder="เช่น ใช้กับ GC, ใบรับรองวิเคราะห์เลขที่..." />
+                </div>
               </div>
               <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
                 <button class="btn btn-primary" type="submit" style="width:auto" id="cylSubmitBtn">บันทึกถังแก๊ส</button>
@@ -508,33 +527,38 @@ async function loadDashboard(){
 
     const list=cyl.cylinders||[];
     // table
-    let html='<table><thead><tr><th>รหัสถัง</th><th>ชนิดแก๊ส</th><th>สถานที่</th><th>แรงดัน</th><th>สถานะ</th><th>ผู้รับผิดชอบ</th></tr></thead><tbody>';
+    let html='<table><thead><tr><th>รหัสถัง</th><th>ชนิดแก๊ส</th><th>ประเภท</th><th>ความเข้มข้น</th><th>สถานที่</th><th>แรงดัน</th><th>วันหมดอายุ</th><th>สถานะ</th></tr></thead><tbody>';
     list.forEach(c=>{
-      html+=`<tr><td>${escapeHtml(c.code)}</td><td>${escapeHtml(c.gas_type)}</td><td>${escapeHtml(c.location)}</td><td>${c.pressure_bar} bar</td><td>${statusLabel(c.status)}</td><td>${escapeHtml(c.responsible||'—')}</td></tr>`;
+      html+=`<tr><td>${escapeHtml(c.code)}</td><td>${escapeHtml(c.gas_type)}</td><td>${c.is_blend?'Blend':'Pure'}</td><td>${escapeHtml(c.concentration||c.purity||'—')}</td><td>${escapeHtml(c.location)}</td><td>${c.pressure_bar} bar</td><td>${expiryBadge(c.expiry_date)}</td><td>${statusLabel(c.status)}</td></tr>`;
     });
     html+='</tbody></table>';
     document.getElementById('cylinderTableWrap').innerHTML=html||'<p class="empty-note">ไม่มีข้อมูล</p>';
 
-    // gas cards
+    // alerts + gas cards
     const cards=document.getElementById('gasCards');
+    // alerts from API
+    try {
+      const al = await api('/api/alerts');
+      const items = al.alerts || [];
+      const alertHtml = items.map(a=>{
+        const dot = a.level==='critical'?'red':(a.level==='warning'?'yellow':'green');
+        return `<div class="alert"><span class="dot ${dot}"></span>
+          <div><h4>${escapeHtml(a.title)}</h4><p>${escapeHtml(a.message)}</p></div></div>`;
+      }).join('');
+      document.getElementById('alertList').innerHTML=alertHtml;
+      document.getElementById('alertPageList').innerHTML=alertHtml;
+    } catch(e) {}
+    // update gas cards with more detail
     cards.innerHTML=list.map(c=>`
       <div class="card"><div class="card-header"><h3>${escapeHtml(c.code)}</h3><span>${escapeHtml(c.gas_type)}</span></div>
       <div class="card-body">
-        <p><b>ความบริสุทธิ์:</b> ${escapeHtml(c.purity||'—')}</p>
-        <p><b>สถานะ:</b> ${c.status==='critical'?'ใกล้หมด':c.status==='low'?'เฝ้าระวัง':'ปกติ'}</p>
+        <p><b>ประเภท:</b> ${c.is_blend?'Blend':'Pure'}</p>
+        <p><b>ความเข้มข้น:</b> ${escapeHtml(c.concentration||c.purity||'—')}</p>
         <p><b>ตำแหน่ง:</b> ${escapeHtml(c.location)}</p>
         <p><b>แรงดัน:</b> ${c.pressure_bar} bar</p>
+        <p><b>วันหมดอายุ:</b> ${c.expiry_date?escapeHtml(String(c.expiry_date).slice(0,10)):'—'}</p>
+        <p><b>สถานะ:</b> ${c.status==='critical'?'ใกล้หมด':c.status==='low'?'เฝ้าระวัง':'ปกติ'}</p>
       </div></div>`).join('') || '<p class="empty-note">ไม่มีข้อมูล</p>';
-
-    // alerts
-    const alerts=list.filter(c=>c.status==='critical'||c.status==='low');
-    const alertHtml = alerts.length ? alerts.map(c=>`
-      <div class="alert"><span class="dot ${c.status==='critical'?'red':'yellow'}"></span>
-      <div><h4>${escapeHtml(c.code)} — ${escapeHtml(c.gas_type)}</h4>
-      <p>แรงดัน ${c.pressure_bar} bar · ${escapeHtml(c.location)}</p></div></div>`).join('')
-      : '<div class="alert"><span class="dot green"></span><div><h4>ไม่มีแจ้งเตือนสำคัญ</h4><p>ถังทั้งหมดอยู่ในเกณฑ์ปกติ</p></div></div>';
-    document.getElementById('alertList').innerHTML=alertHtml;
-    document.getElementById('alertPageList').innerHTML=alertHtml;
 
     document.getElementById('kpiTable').innerHTML=`
       <tr><td>ถังทั้งหมด</td><td><b>${stats.totalCylinders}</b></td></tr>
@@ -637,19 +661,21 @@ async function loadCylinderManage(){
       wrap.innerHTML = '<p class="empty-note">ยังไม่มีถังแก๊ส — กรุณาเพิ่มรายการด้านบน</p>';
       return;
     }
-    let html = '<table><thead><tr><th>รหัสถัง</th><th>ชนิดแก๊ส</th><th>สถานที่</th><th>แรงดัน</th><th>ความบริสุทธิ์</th><th>สถานะ</th><th>ผู้รับผิดชอบ</th><th>จัดการ</th></tr></thead><tbody>';
+    let html = '<table><thead><tr><th>รหัสถัง</th><th>ชนิดแก๊ส</th><th>ประเภท</th><th>ความเข้มข้น</th><th>สถานที่</th><th>แรงดัน</th><th>วันหมดอายุ</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody>';
     window._cylMap = {};
     list.forEach(c=>{
       window._cylMap[c.id] = c;
       const codeSafe = escapeHtml(c.code).replace(/'/g, "\\'");
+      const blendTag = c.is_blend ? '<span class="status low">Blend</span>' : '<span class="status normal">Pure</span>';
       html += `<tr>
         <td>${escapeHtml(c.code)}</td>
         <td>${escapeHtml(c.gas_type)}</td>
+        <td>${blendTag}</td>
+        <td>${escapeHtml(c.concentration||c.purity||'—')}</td>
         <td>${escapeHtml(c.location)}</td>
         <td>${c.pressure_bar} bar</td>
-        <td>${escapeHtml(c.purity||'—')}</td>
+        <td>${expiryBadge(c.expiry_date)}</td>
         <td>${statusLabel(c.status)}</td>
-        <td>${escapeHtml(c.responsible||'—')}</td>
         <td style="white-space:nowrap">
           <button type="button" class="btn btn-secondary" style="padding:6px 10px;font-size:12px;width:auto" onclick="editCylinderById(${c.id})">แก้ไข</button>
           <button type="button" class="btn btn-danger" style="padding:6px 10px;font-size:12px;width:auto" onclick="deleteCylinder(${c.id}, '${codeSafe}')">ลบ</button>
@@ -668,9 +694,30 @@ function resetCylinderForm(){
   document.getElementById('cylFormMode').textContent = 'รายการใหม่';
   document.getElementById('cylSubmitBtn').textContent = 'บันทึกถังแก๊ส';
   document.getElementById('cylStatus').value = 'normal';
+  document.getElementById('cylBlend').value = '0';
+  toggleBlendFields();
 }
 
 function editCylinderById(id){ const c = window._cylMap && window._cylMap[id]; if(c) editCylinder(c); }
+
+function toggleBlendFields(){
+  const isBlend = document.getElementById('cylBlend').value === '1';
+  const lab = document.querySelector('label[for="cylConcentration"]');
+  if(lab) lab.textContent = isBlend ? 'ความเข้มข้น / สัดส่วน *' : 'ความเข้มข้น / สัดส่วน';
+}
+
+function expiryBadge(exp){
+  if(!exp) return '—';
+  const d = new Date(exp.slice(0,10) + 'T00:00:00');
+  if(isNaN(d)) return escapeHtml(exp);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const days = Math.round((d - today) / 86400000);
+  const dateStr = exp.slice(0,10);
+  if(days < 0) return `<span class="status critical">หมดอายุแล้ว (${dateStr})</span>`;
+  if(days <= 7) return `<span class="status critical">อีก ${days} วัน (${dateStr})</span>`;
+  if(days <= 30) return `<span class="status low">อีก ${days} วัน (${dateStr})</span>`;
+  return escapeHtml(dateStr);
+}
 
 function editCylinder(c){
   document.getElementById('cylId').value = c.id;
@@ -681,6 +728,11 @@ function editCylinder(c){
   document.getElementById('cylPurity').value = c.purity || '';
   document.getElementById('cylStatus').value = c.status || 'normal';
   document.getElementById('cylResponsible').value = c.responsible || '';
+  document.getElementById('cylBlend').value = c.is_blend ? '1' : '0';
+  document.getElementById('cylConcentration').value = c.concentration || '';
+  document.getElementById('cylExpiry').value = (c.expiry_date || '').slice(0,10);
+  document.getElementById('cylNotes').value = c.notes || '';
+  toggleBlendFields();
   document.getElementById('cylFormTitle').textContent = 'แก้ไขถังแก๊ส';
   document.getElementById('cylFormMode').textContent = c.code;
   document.getElementById('cylSubmitBtn').textContent = 'บันทึกการแก้ไข';
@@ -698,7 +750,11 @@ async function saveCylinder(e){
     pressure_bar: parseFloat(document.getElementById('cylPressure').value),
     purity: document.getElementById('cylPurity').value.trim(),
     status: document.getElementById('cylStatus').value,
-    responsible: document.getElementById('cylResponsible').value.trim()
+    responsible: document.getElementById('cylResponsible').value.trim(),
+    is_blend: document.getElementById('cylBlend').value === '1',
+    concentration: document.getElementById('cylConcentration').value.trim(),
+    expiry_date: document.getElementById('cylExpiry').value,
+    notes: document.getElementById('cylNotes').value.trim()
   };
   try{
     if(id){
