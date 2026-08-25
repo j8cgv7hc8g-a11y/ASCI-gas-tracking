@@ -294,11 +294,11 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT COUNT(*) AS c FROM cylinders WHERE status = 'normal'"
             ).fetchone()["c"]
             usage_count = conn.execute("SELECT COUNT(*) AS c FROM usage_records").fetchone()["c"]
-            conn.close()
             # expiry monitoring
             rows = conn.execute(
                 "SELECT id, code, gas_type, expiry_date, status FROM cylinders WHERE expiry_date IS NOT NULL AND expiry_date != ''"
             ).fetchall()
+            conn.close()
             from datetime import datetime, timedelta
             today = datetime.utcnow().date()
             expired = 0
